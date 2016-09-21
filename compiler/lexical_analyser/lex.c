@@ -19,13 +19,15 @@ author:heqq
 ****************************************************/
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
+#include "utils.h"
 
 #define ACTION_STATE 31
-#define ACT(token_type,state) (token_type<<7 | state)
+#define ACT(token_type,state) ((token_type<<7) | state)
 #define GETACT(state) (state>>7 & 0x1ff)
 #define MARKER 0100
 
-//total state:41
+//total state:42
 enum STATE {
 	//each line contains ten states
 	START,ID1,NUM1,NUM2,NUM3,DOT1,STR1,STR2,STR3,CC1,
@@ -34,7 +36,7 @@ enum STATE {
 	// each line contains five states
 	END=ACTION_STATE,END_FORWARD,S_NL,S_EOF,STR_EOF,
 	STR_NL,S_COMNL,S_EOFCOM,S_COMMENT,S_WS,
-	S_NAME
+	S_NAME,S_EOB
 };
 
 //define four `char' type
@@ -43,11 +45,12 @@ enum STATE {
 #define C_DIGIT 	2
 #define C_WS 		3
 
+typedef unsigned char uchar;
 //define two special char:end of buffer & end of file
 #define EOB	0xfe  
-#define EOF 0xff
+#define EOFC 0xff
 //total type: 54
-enum token_type{
+enum TOKEN_TYPE{
 	//each line contains ten type
 	NAME,NUMBER,ELLIPS,STRING,CHAR_CONST,NL,WS,DOT,PLUS,D_PLUS,
 	ASSIGN_PLUS,MINUS,D_MINUS,ASSIGN_MINUS,ARROW,STAR,ASSIGN_STAR,SLASH,ASSIGN_SLASH,PERSENT,
@@ -57,7 +60,7 @@ enum token_type{
 	COMMA,COLON,SEMIC,QUEST
 };
 #ifdef _DEBUG
-token_string[][]={
+char *token_string[]={
 	"id",	"number",	"...",	"string",	"char",		"new line",		"whitespace",	".",	"+",	"++",
 	"+=",	"-",		"--",	"-=",		"->",		"*",			"*=",			"/",	"/=",	"%",
 	"%=",	">",		">=",	"<",		"<=",		">>",			">>=",			"<<",	"<<=",	"|",
@@ -71,7 +74,7 @@ token_string[][]={
 //define `finite state machine'
 struct fsm{
 	int state;
-	char ch;
+	uchar ch;
 	int next_state;
 };
 
@@ -119,7 +122,7 @@ struct fsm fsm[]={
 	START,	';',		ACT(SEMIC,END_FORWARD),
 	START,	'?',		ACT(QUEST,END_FORWARD),
 	START,	'\n',		S_NL,
-	START,	EOF,		S_EOF,
+	START,	EOFC,		S_EOF,
 
 	// id consists of 'digit' 'letter' '_ ' and starts with `letter' or `_'
 	ID1,	C_ALL,		ACT(NAME,END),
@@ -134,12 +137,12 @@ struct fsm fsm[]={
 	NUM1,	C_DIGIT,	NUM1,
 	NUM1,	C_LETTER,	NUM1,
 	NUM1,	'.',		NUM1,
-	NUM1,	'E',		NUM3
+	NUM1,	'E',		NUM3,
 	NUM1,	'e',		NUM3,
 
 	// see a `.',maybe `...'
 	NUM2,	C_ALL,		ACT(DOT,END),
-	NUM2,	C_DIGIT,	NUM1
+	NUM2,	C_DIGIT,	NUM1,
 	NUM2,	'.',		DOT1,
 
 	//see a `E' 
@@ -158,23 +161,23 @@ struct fsm fsm[]={
 	STR2,	C_ALL,		STR2,
 	STR2,	'"',		ACT(STRING,END_FORWARD),
 	STR2,	'\n',		STR_NL,
-	STR2,	EOF,		STR_EOF,
+	STR2,	EOFC,		STR_EOF,
 	STR2,	'\\',		STR3,
 	
 	STR3,	C_ALL,		STR2,
 	STR3,	'\n',		STR_NL,
-	STR3,	EOF,		STR_EOF,
+	STR3,	EOFC,		STR_EOF,
 
 	//see a char. maybe foldline
 	CC1,	C_ALL,		CC1,
-	CC1,	'\'',		ACT(CHAR_CONST,END_FORWARD)
-	CC1,	'\\',		CC2
+	CC1,	'\'',		ACT(CHAR_CONST,END_FORWARD),
+	CC1,	'\\',		CC2,
 	CC1,	'\n',		STR_NL,
-	CC1,	EOF,		STR_EOF,
+	CC1,	EOFC,		STR_EOF,
 
 	CC2,	C_ALL,		CC1,
 	CC2,	'\n',		STR_NL,
-	CC2,	EOF,		STR_EOF,
+	CC2,	EOFC,		STR_EOF,
 
 	//eat up ws
 	WS1,	C_ALL,		S_WS,
@@ -191,10 +194,10 @@ struct fsm fsm[]={
 	MINUS1,	C_ALL,		ACT(MINUS,END),
 	MINUS1,	'-',		ACT(D_MINUS,END_FORWARD),
 	MINUS1,	'=',		ACT(ASSIGN_MINUS,END_FORWARD),
-	MINUS1,	'>',		ACT(ARROW),
+	MINUS1,	'>',		ACT(ARROW,END_FORWARD),
 
 	//see /, /=, //, /*
-	COM1,	C_ALL		ACT(SLASH,END),
+	COM1,	C_ALL,		ACT(SLASH,END),
 	COM1,	'=',		ACT(ASSIGN_SLASH,END_FORWARD),
 	COM1,	'*',		COM2,
 	COM1,	'/',		COM4,
@@ -203,18 +206,18 @@ struct fsm fsm[]={
 	COM2,	C_ALL,		COM2,
 	COM2,	'*',		COM3,
 	COM2,	'\n',		S_COMNL,
-	COM2,	EOF,		S_EOFCOM,
+	COM2,	EOFC,		S_EOFCOM,
 
 	//maybe end of comment: `*/'
 	COM3,	C_ALL,		COM2,
 	COM3,	'/',		S_COMMENT,
 	COM3,	'\n',		S_COMNL,
-	COM3,	EOF,		S_EOFCOM,
+	COM3,	EOFC,		S_EOFCOM,
 
 	//comment starts with `//'
 	COM4,	C_ALL,		COM4,
 	COM4,	'\n',		S_COMNL,
-	COM4,	EOF,		S_EOFCOM,
+	COM4,	EOFC,		S_EOFCOM,
 
 	//starts with `*',`*='
 	STAR1,	C_ALL,		ACT(STAR,END),
@@ -271,22 +274,49 @@ struct fsm fsm[]={
 
 int bigmap[256][ACTION_STATE];
 
-struct source {
+//try to read file into in_buffer in once
+//out buffer align with 4k
+#define IN_BUFFER 	32768
+#define OUT_BUFFER	4096
+#define new(t) (t*)do_malloc(sizeof(t))
+
+typedef struct source {
 	char *FileName;
 	int line;
 	int lineinc;
+	uchar *in_buffer;
+	uchar *in_current;
+	uchar *in_last;
 	FILE *fp;
 	struct source *next;
-}
+}Source;
+
+Source *current_source=NULL;
+
+typedef struct token{
+	uchar *first;
+	int len;
+	int type;
+	struct token *next;
+}Token;
+
+typedef struct token_row{
+	Token *t_first;
+	Token *t_current;
+	Token *t_last;
+}TokenRow;
+
 //fill in the bigmap
 void expand_lex(){
 	struct fsm *tmp;
-	int next_state,i;
-	for(tmp=fsm,tmp>0,tmp++){
+	int next_state,i,j;
+	for(tmp=fsm;tmp->state>=0;tmp++){
+		next_state = tmp->next_state;
+		if(tmp->next_state >= ACTION_STATE)
+			// state lt zero which means special action need
+			next_state = ~tmp->next_state;
 		switch(tmp->ch){
-			if(tmp->next_state > ACTION_STATE)
-				// state lt zero which means special action need
-				next_state = ~tmp->next_state;
+
 			case C_ALL:	
 				for(i=0;i<256;i++)
 					bigmap[i][tmp->state] = next_state;
@@ -306,7 +336,6 @@ void expand_lex(){
 				break;
 		}
 	}
-	int j;
 	//set special flag for `foldline', `trigraph'
 	for(j=0;j<ACTION_STATE;j++){
 		for(i=0;i<256;i++){
@@ -318,31 +347,202 @@ void expand_lex(){
 		}
 		// beacuse fsm has already set some EOF .
 		// there needs to be gt zero.
-		if(bigmap[EOF][j] > 0)
-			bigmap[EOF][j] = ~S_EOF;
+		
+		if(bigmap[EOFC][j] > 0)
+			bigmap[EOFC][j] = ~S_EOF;
+		//set EOB for special action
+		bigmap[EOB][j] = ~S_EOB;
 	}
+}
+void fillbuf(Source *s){
+	/*	always read 4k into buffer
+		we can't read 32k into buffer at once
+		because token_row points some token 
+	*/
+	int nr=IN_BUFFER/8,n;
+	if(s->in_last+nr > s->in_buffer + IN_BUFFER)
+		error(FATAL,"buffer overflow");
+	if(s->fp ==NULL || (n=fread(s->in_last,1,nr,s->fp)) < 0)
+		n=0;
+	//adjust the last pointer;
+	s->in_last += n;
+	s->in_last[0] = s->in_last[1] = EOB;
+	//when approach the end of file set the sentinel
+	if(n==0){
+		s->in_last[0] = s->in_last[1] = EOFC;
+		return EOF;
+	}
+	return 0;
+}
+void put_token(TokenRow *tk_row){
+	Token *tmp = tk_row->t_first;
+	int i;
+	for(;tmp != tk_row->t_last;tmp=tmp->next){
+		for(i=0;i<tmp->len;i++)
+			printf("%c",tmp->first[i]);
+		printf("\ttype:%d\n",tmp->type);
+	}
+}
+void get_token(TokenRow *tk_row){
+	Source *s = current_source;
+	uchar *ip,ch;
+	int state,old_state;
+	Token *tp;
+	ip = s->in_current;
+	for(;;){
+continue2:
+		put_token(tk_row);
+		tp = tk_row->t_current;
+		if(tp >= tk_row->t_last){
+			// attach a new Token at the last
+			// last Token is blank
+			tk_row->t_last = new(Token);
+			tp->next = tk_row->t_last;
+		}
+		tp->first = ip;
+		tp->len = 0;
+		//set state to `START' begin fsm
+		state = START;
+		for(;;){
+			ch = *ip;
+			//存储当前状态，在语句EOB的时候用于恢复
+			old_state = state;
+			state = bigmap[ch][state];
+			if(state > 0){
+				// see next char
+				ip++;
+				continue;
+			}
+			// when state lt zero which means special action
+			// the last seven bit stores state;
+			state = ~state;
+			//低7位存储的状态
+			switch(state & 0177){
+				// needs eat up next ch
+				case END_FORWARD:
+					ip++;
+				case END:
+					tp->len=ip - tp->first;
+					tp->type = GETACT(state);
+					//当前指针往后移
+					tk_row->t_current = tp->next;
+					goto continue2;
+				case S_EOF:
+					return ;
+				case S_NL:
+					break;
+				case STR_EOF:
+					error(FATAL,"EOF in string or const char");
+					break;
+				case STR_NL:
+					error(FATAL,"Unterminated string or char const");
+					break;
+				case S_COMNL:
+					state = COM2;
+					ip++;
+					continue;
+				case S_EOFCOM:
+					error(WARNING,"EOF in comment");
+					break;
+				case S_COMMENT:
+					//eat up `/'
+					ip++;
+					state = START;
+					continue;
+				case S_WS:
+					state = START;
+					// skip ws
+					tp->first = ip;
+					continue;
+				case S_NAME:
+					break;
+				case S_EOB:
+					fillbuf(s);
+					state = old_state;
+					continue;
+				default:
+					if((state & MARKER) ==0 ){
+						ip++;
+						continue;
+					}
+					state 
+					printf("NOT implemented!");
+					break;
+			}
+			break;
+		}
+		ip++;
+	}
+}
+
+// params: 	name -> filename
+// 			fd -> file desc
+// 			string -> when read from stdin represents the command arg
+// 	if fd == NULL && string !=NULL read from string
+// 	if fd != NULL && string == NULL read from file name
+void set_source(char *name,FILE *fd,char *string){
+	Source *s = new(Source);
+	int len;
+	s->FileName = name;
+	s->line=1;
+	s->lineinc=0;
+	s->in_buffer=NULL;
+	s->in_current=NULL;
+	s->in_last=NULL;
+	s->fp=fd;
+	s->next=current_source;
+	// set current_source points the first one
+	current_source = s;
+	// actual need 1 byte for set EOFC
+	//from command arg
+	if(fd == NULL && string != NULL){
+		len=strlen(string);
+		s->in_buffer = (char*)do_malloc(len+4);
+		strncpy(s->in_buffer,string,len);
+	}
+	//from file 
+	else {
+		s->in_buffer = (char *)do_malloc(IN_BUFFER+4);
+		len =0;
+	} 
+	s->in_current = s->in_buffer;
+	s->in_last = s->in_buffer + len;
+	s->in_last[0] = s->in_last[1] = EOB;
 }
 
 void usage(){
-	char usages[][]={
+	char *usages[]={
 		"usage: cpp [options] source",
-		"options: 	-v(version)",
-		"			-V(verbose)",
-		"			-+(Cplusplus)",
-		"			-N(Not include)",
-		"			-I(include)",
-		"			-D(define)",
-		"			-U(undefine)",
-		"			-t(trigraphs)",
+		"options:	-v(version)",
+		"		-V(verbose)",
+		"		-+(Cplusplus)",
+		"		-N(Not include)",
+		"		-I(include)",
+		"		-D(define)",
+		"		-U(undefine)",
+		"		-t(trigraphs)",
 		NULL,	
-	}
-	char *help;
-	for(help=usages;help;help++)
-		printf("%s\n", help);
+	};
+	char **help;
+	for(help=usages;*help;*help++)
+		printf("%s\n", *help);
 }
 
 int main(int argc,char **argv){
+	TokenRow token_row;
+	Token blank_token;
+	token_row.t_first = token_row.t_current = token_row.t_last = &blank_token;
 	if(argc == 1)
 		usage();
-
+	expand_lex();
+	if(argc==2){
+		FILE *fd;
+		fd=fopen(argv[1],"r");
+		if(fd == NULL){
+			error(FATAL,"open file error");
+		}
+		set_source(argv[1],fd,NULL);
+		get_token(&token_row);
+	}
+	return 0;
 }
