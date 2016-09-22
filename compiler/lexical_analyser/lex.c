@@ -27,7 +27,7 @@ author:heqq
 #define GETACT(state) (state>>7 & 0x1ff)
 #define MARKER 0100
 
-//total state:42
+//total state:41
 enum STATE {
 	//each line contains ten states
 	START,ID1,NUM1,NUM2,NUM3,DOT1,STR1,STR2,STR3,CC1,
@@ -35,8 +35,8 @@ enum STATE {
 	GT1,GT2,LT1,LT2,OR1,AND1,NOT1,CIRC1,ASG1,SHARP1,
 	// each line contains five states
 	END=ACTION_STATE,END_FORWARD,S_NL,S_EOF,STR_EOF,
-	STR_NL,S_COMNL,S_EOFCOM,S_COMMENT,S_WS,
-	S_NAME,S_EOB
+	STR_NL,S_COMNL,S_EOFCOM,S_COMMENT,S_NAME,
+	S_EOB
 };
 
 //define four `char' type
@@ -49,7 +49,7 @@ typedef unsigned char uchar;
 //define two special char:end of buffer & end of file
 #define EOB	0xfe  
 #define EOFC 0xff
-//total type: 54
+//total type: 56
 enum TOKEN_TYPE{
 	//each line contains ten type
 	NAME,NUMBER,ELLIPS,STRING,CHAR_CONST,NL,WS,DOT,PLUS,D_PLUS,
@@ -57,7 +57,9 @@ enum TOKEN_TYPE{
 	ASSIGN_PERSENT,GT,GEQ,LT,LEQ,RSH,ASSIGN_RSH,LSH,ASSIGN_LSH,OR,
 	ASSIGN_OR,LOR,AND,ASSIGN_AND,LAND,NOT,NEQ,TITDE,ASSIGN,EQ,
 	CIRC,ASSIGN_CIRC,SHARP,D_SHARP,LEFT_BRAKET,RIGHT_BRAKET,LEFT_PARENTHESIS,RIGHT_PARENTHESIS,LEFT_BRACE,RIGHT_BRACE,
-	COMMA,COLON,SEMIC,QUEST
+	COMMA,COLON,SEMIC,QUEST,
+
+	UNCLASS,T_END,//two type indentify `start' and `eof'
 };
 #ifdef _DEBUG
 char *token_string[]={
@@ -79,7 +81,7 @@ struct fsm{
 };
 
 struct fsm fsm[]={
-	START,	C_ALL,		START,
+	START,	C_ALL,		ACT(UNCLASS,END),
 
 	// see `letter' or `_', maybe a ID 
 	START,	C_LETTER,	ID1,
@@ -180,7 +182,7 @@ struct fsm fsm[]={
 	CC2,	EOFC,		STR_EOF,
 
 	//eat up ws
-	WS1,	C_ALL,		S_WS,
+	WS1,	C_ALL,		ACT(WS,END),
 	WS1,	' ',		WS1,
 	WS1,	'\t',		WS1,
 	WS1,	'\v',		WS1,
@@ -342,7 +344,7 @@ void expand_lex(){
 			if(i == '\\' || i == '?'){
 				if(bigmap[i][j]>0)
 					bigmap[i][j] = ~bigmap[i][j];
-				bigmap[i][j] |= MARKER;
+				bigmap[i][j] &= ~MARKER;
 			}
 		}
 		// beacuse fsm has already set some EOF .
@@ -354,7 +356,7 @@ void expand_lex(){
 		bigmap[EOB][j] = ~S_EOB;
 	}
 }
-void fillbuf(Source *s){
+int fillbuf(Source *s){
 	/*	always read 4k into buffer
 		we can't read 32k into buffer at once
 		because token_row points some token 
@@ -374,14 +376,86 @@ void fillbuf(Source *s){
 	}
 	return 0;
 }
-void put_token(TokenRow *tk_row){
-	Token *tmp = tk_row->t_first;
-	int i;
-	for(;tmp != tk_row->t_last;tmp=tmp->next){
-		for(i=0;i<tmp->len;i++)
-			printf("%c",tmp->first[i]);
-		printf("\ttype:%d\n",tmp->type);
+int check_trigraphs(Source *s){
+	uchar ch = 0;
+	//确保所需判断字符已经在当前缓冲区内
+	while((s->in_current +2 >=s->in_last )&& fillbuf(s)!=EOF)
+		;
+	// `?' next ch isn't ?
+	if(s->in_current[1] != '?')
+		return ch;
+	switch(s->in_current[2]){
+	case '=':
+		ch = '#';
+		break;
+	case '(':
+		ch = '[';
+		break;
+	case '/':
+		ch = '\\';
+		break;
+	case ')':
+		ch = ']';
+		break;
+	case '\'':
+		ch = '^';
+		break;
+	case '<':
+		ch = '{';
+		break;
+	case '!':
+		ch = '|';
+		break;
+	case '>':
+		ch = '}';
+		break;
+	case '-':
+		ch = '~';
+		break;
 	}
+	//如果ch已经赋值，表明需要进行转换
+	if(ch){
+		*s->in_current = ch;
+		strncpy(s->in_current+1,s->in_current + 3,(s->in_last - (s->in_current + 3) +1));
+		s->in_last -=2;
+	}
+	return ch;
+}
+int check_foldline(Source *s){
+	//确保换行符已经在当前缓冲区内,如果没有则填充缓冲区
+	while((s->in_buffer+1>=s->in_last) && fillbuf(s)!=EOF)
+		;
+	//如果下一个字符是换行符进行处理
+	if(s->in_current[1] == '\n'){
+		strncpy(s->in_buffer,s->in_buffer+2,(s->in_last - (s->in_buffer + 2) +1));
+		s->in_last -= 2;
+		return 1;
+	}
+	return 0;
+}
+void put_token(TokenRow *tk_row){
+	Token *t,*tmp;
+	int i;
+	t = tk_row->t_first;
+	while(t != tk_row->t_last){
+		for(i=0;i<t->len;i++)
+			printf("%c",t->first[i]);
+#ifdef _DEBUG
+		printf("\t%s",token_string[t->type]);
+#endif
+		printf("\ttype:%d\n",t->type);
+		//处理完后跳出循环
+		tmp = t;
+		t = t->next;
+		if(tmp->type == T_END){
+			do_free(tmp);
+			exit(0);
+		}
+		//每次处理一个token后，释放当前token
+		do_free(tmp);
+	}
+	//处理完一行中所有token，重置first指针
+	tk_row->t_first = tk_row->t_last;
 }
 void get_token(TokenRow *tk_row){
 	Source *s = current_source;
@@ -391,7 +465,6 @@ void get_token(TokenRow *tk_row){
 	ip = s->in_current;
 	for(;;){
 continue2:
-		put_token(tk_row);
 		tp = tk_row->t_current;
 		if(tp >= tk_row->t_last){
 			// attach a new Token at the last
@@ -400,6 +473,7 @@ continue2:
 			tp->next = tk_row->t_last;
 		}
 		tp->first = ip;
+		tp->type = UNCLASS;
 		tp->len = 0;
 		//set state to `START' begin fsm
 		state = START;
@@ -417,6 +491,7 @@ continue2:
 			// the last seven bit stores state;
 			state = ~state;
 			//低7位存储的状态
+			reswitch:
 			switch(state & 0177){
 				// needs eat up next ch
 				case END_FORWARD:
@@ -428,9 +503,19 @@ continue2:
 					tk_row->t_current = tp->next;
 					goto continue2;
 				case S_EOF:
+					tp->type = T_END;
+					tk_row->t_current = tp->next;
 					return ;
 				case S_NL:
-					break;
+					tp->type = NL;
+					tp->first = ip;
+					tp->len = 1;
+					tk_row->t_current = tp->next;
+					//adjust some vars for next loop
+					s->lineinc ++ ;
+					//当前指针后移
+					s->in_current = ++ip;
+					return;
 				case STR_EOF:
 					error(FATAL,"EOF in string or const char");
 					break;
@@ -440,20 +525,37 @@ continue2:
 				case S_COMNL:
 					state = COM2;
 					ip++;
+					//adjust some vars 
+					s->lineinc ++;
+					/*	因为注释并不会出现在预处理后的文件中，也就是说遇到comment直接 eat up，
+						所以当遇到非常长的注释，剩余buffer空间无法容纳的时候，需要调整buffer，
+						调整基于，tp->first指针指向的是注释开始的位置，直接用后续内容覆盖到 tp->first
+							+-------------------------------------------------------------------------+
+							| 0  | 1|  2| 3 | 4			| 5 |6	| 7 |8	|9	| 10| 11| 12| 13|  14	  |																		  |	
+							+-------------------------------------------------------------------------+
+							|in_b|	|	|	|tp->first	|	|	|	|	|	|ip |	|	|	|	|in_l |
+							+-------------------------------------------------------------------------+
+						然后调整指针指向正确的位置
+						
+					*/
+					if(ip > (s->in_buffer + 7/8*IN_BUFFER)){
+						strncpy(tp->first,ip,s->in_last - ip + 1);
+						ip = tp->first;
+						s->in_last -= ip - tp->first;
+					}
 					continue;
 				case S_EOFCOM:
+					//similer to EOF
 					error(WARNING,"EOF in comment");
-					break;
+					tp->type = T_END;
+					tk_row->t_current = tp->next;
+					return ;
 				case S_COMMENT:
 					//eat up `/'
 					ip++;
 					state = START;
-					continue;
-				case S_WS:
-					state = START;
-					// skip ws
-					tp->first = ip;
-					continue;
+					goto continue2;
+				//check 宏定义
 				case S_NAME:
 					break;
 				case S_EOB:
@@ -465,13 +567,32 @@ continue2:
 						ip++;
 						continue;
 					}
-					state 
-					printf("NOT implemented!");
-					break;
+					// check ?? and \
+					// clear the flag 该状态代表真正的结束状态
+					state &=~MARKER;
+					s->in_current = ip;
+					if(ch == '?'){
+						if(check_trigraphs(s)){
+							//如果是三字母词，则恢复原来状态，重新循环
+							state = old_state;
+							continue;
+						}
+						//否则的话，就是某个
+						goto reswitch;
+					}
+					if(ch == '\\'){
+						if(check_foldline(s)){
+							s->lineinc++;
+							state = old_state;
+						}
+						goto reswitch;
+					}
+					//skip current error ch
+					ip++;
+					continue;
 			}
 			break;
 		}
-		ip++;
 	}
 }
 
@@ -497,12 +618,12 @@ void set_source(char *name,FILE *fd,char *string){
 	//from command arg
 	if(fd == NULL && string != NULL){
 		len=strlen(string);
-		s->in_buffer = (char*)do_malloc(len+4);
+		s->in_buffer = (uchar*)do_malloc(len+4);
 		strncpy(s->in_buffer,string,len);
 	}
 	//from file 
 	else {
-		s->in_buffer = (char *)do_malloc(IN_BUFFER+4);
+		s->in_buffer = (uchar *)do_malloc(IN_BUFFER+4);
 		len =0;
 	} 
 	s->in_current = s->in_buffer;
@@ -530,8 +651,8 @@ void usage(){
 
 int main(int argc,char **argv){
 	TokenRow token_row;
-	Token blank_token;
-	token_row.t_first = token_row.t_current = token_row.t_last = &blank_token;
+	//allocate a blanktoken for end;
+	token_row.t_first = token_row.t_current = token_row.t_last = new(Token);
 	if(argc == 1)
 		usage();
 	expand_lex();
@@ -542,7 +663,10 @@ int main(int argc,char **argv){
 			error(FATAL,"open file error");
 		}
 		set_source(argv[1],fd,NULL);
-		get_token(&token_row);
+		while(1){
+			get_token(&token_row);
+			put_token(&token_row);
+		}
 	}
 	return 0;
 }
